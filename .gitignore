@@ -1,0 +1,25 @@
+# ── 시크릿 ───────────────────────────────
+.env
+.env.*
+!.env.example
+
+# ── 개인 포트폴리오 (보유 종목·비중) ─────
+tickers.json
+
+# ── 수집/분석 산출물 ─────────────────────
+MarketData/
+WeeklyData/
+MonthlyMacroData/
+_cache/
+*.xlsx
+collection_summary_*.json
+daily_summary_*.json
+claude_usage.jsonl
+
+# ── Python / 기타 ────────────────────────
+__pycache__/
+*.py[cod]
+*.log
+.venv/
+venv/
+.claude/
