@@ -1,0 +1,9 @@
+requests
+pandas
+openpyxl
+
+# 월간_매크로섹터분석.py(수동 실행용)를 쓸 때만 추가로 필요
+# yfinance
+# fredapi
+# beautifulsoup4
+# lxml
