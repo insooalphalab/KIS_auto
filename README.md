@@ -22,24 +22,27 @@ Windows 작업 스케줄러 ─▶ 한투API_스케줄러.py ─┬─ ① 수�
 | 시간별 | 평일 10:00 / 13:00 / 15:20 | `--once` | 분봉, 체결강도, 외인·기관 가집계, 프로그램 매매 |
 | 일별 | 평일 16:05 | `--daily` | 일봉, 수급, 뉴스, 대차거래, 신용잔고, 심화지표, 시장 비중, 회원사 동향, 매물대 |
 | 주간 | 토요일 09:00 | `--weekly` | 주봉·40주선 이격도, 주간 수급 누적, 신용잔고 증감, 거래대금, 외인소진율 |
+| 월간매크로 (수동) | *스케줄 미등록* | `--monthly` | 금리·신용스프레드 등 매크로 L1~L3, 섹터 Bottom-up, DRAM/NAND 현물가 |
 
 리포트는 **수급과 기술분석 중심**입니다. 금리·유가·환율 같은 매크로 판단은 이 프로젝트의 범위 밖이며,
-프롬프트에서도 매크로를 판단하지 않도록 지시합니다. (`월간_매크로섹터분석.py`는 수동 실행용으로만
-남아 있고 스케줄에는 등록하지 않습니다.)
+프롬프트에서도 매크로를 판단하지 않도록 지시합니다. `월간_매크로섹터분석.py`로 시작하는 월간 사이클도
+수집 → Claude 분석 → 텔레그램 발송까지 다른 사이클과 동일하게 동작하지만, **작업 스케줄러에는 등록하지
+않고** 수동 실행(`python 한투API_스케줄러.py --monthly`)으로만 남겨뒀습니다.
 
 ## 파일 구성
 
 | 파일 | 역할 |
 |---|---|
-| `한투API_스케줄러.py` | 진입점. `--once / --daily / --weekly`로 수집 → 분석을 순서대로 실행 |
+| `한투API_스케줄러.py` | 진입점. `--once / --daily / --weekly / --monthly`로 수집 → 분석을 순서대로 실행 |
 | `한투API_시간별데이터.py` · `한투API_일별데이터.py` · `한투API_주간데이터.py` | 한투 Open API 수집기 (xlsx 저장) |
 | `한투API_텔레그램분석.py` | 프롬프트 정의, Claude Code CLI 호출, 텔레그램 발송, 사용량 로깅 |
 | `kis_config.py` | `.env` 로더 (시크릿 분리) |
 | `setup_tasks.ps1` / `remove_tasks.ps1` | 작업 스케줄러 등록 / 제거 |
 | `.env.example` · `tickers.example.json` | 설정 템플릿 |
-| `월간_매크로섹터분석.py` | (수동 실행용) 매크로·섹터 데이터 수집 |
+| `월간_매크로섹터분석.py` | 매크로·섹터 데이터 수집 (수동 실행용, `--monthly`로 돌리면 Claude 분석·텔레그램 발송까지 이어짐) |
 
-실행 중 생성되는 폴더/파일(모두 git 제외): `MarketData/`(시간별·일별), `WeeklyData/`, `_cache/`(일별 심화지표 캐시),
+실행 중 생성되는 폴더/파일(모두 git 제외): `MarketData/`(시간별·일별), `WeeklyData/`(주간),
+`MonthlyMacroData/`(월간매크로, 수동 실행 시), `_cache/`(일별 심화지표 캐시),
 `claude_usage.jsonl`(Claude 호출별 토큰·비용 로그).
 
 ## 준비물
@@ -85,13 +88,15 @@ copy tickers.example.json tickers.json    # 열어서 본인 종목/비중으로
 python 한투API_스케줄러.py --once      # 시간별 수집 + 분석 + 텔레그램 발송
 python 한투API_스케줄러.py --daily     # 일별
 python 한투API_스케줄러.py --weekly    # 주간
+python 한투API_스케줄러.py --monthly   # 월간매크로 (수동, 스케줄 미등록 — FRED_API_KEY 등 추가 키 필요)
 ```
 
 텔레그램 발송 없이 콘솔에서 결과만 보려면 분석기를 직접 `--preview`로 실행합니다.
 
 ```
-python 한투API_텔레그램분석.py --weekly --preview --date 20260919
-python 한투API_텔레그램분석.py --daily  --preview
+python 한투API_텔레그램분석.py --weekly  --preview --date 20260919
+python 한투API_텔레그램분석.py --daily   --preview
+python 한투API_텔레그램분석.py --monthly --preview
 ```
 
 ## 자동 실행 (Windows 작업 스케줄러)
@@ -114,14 +119,19 @@ python 한투API_텔레그램분석.py --daily  --preview
 
 리포트 형식과 지침은 `한투API_텔레그램분석.py`의 프롬프트 상수에 있습니다.
 
-- `HOURLY_SYSTEM_PROMPT`, `DAILY_SYSTEM_PROMPT`, `build_weekly_portfolio_prompt()`
+- `HOURLY_SYSTEM_PROMPT`, `DAILY_SYSTEM_PROMPT`, `build_weekly_portfolio_prompt()`, `MONTHLY_SYSTEM_PROMPT`
 - `COMPACT_STYLE_RULES` — 모든 리포트에 붙는 "문장 압축" 공통 규칙 (항목당 한 줄, 완곡 표현 제거)
 
 Claude 호출 옵션은 `CLAUDE_EXTRA_ARGS`에 있습니다. `--disable-slash-commands`, `--strict-mcp-config`로
 스킬·MCP 설명이 시스템 프롬프트에 실리는 것을 막아 호출당 약 6,000 토큰을 줄이고,
-`--output-format json`으로 받은 토큰·비용을 `claude_usage.jsonl`에 누적합니다.
-무인 실행이라 `--dangerously-skip-permissions`를 쓰는 대신, 작업 디렉터리를 그 회차의 데이터 폴더 하나로 한정합니다.
-이 설정이 부담되면 실행 환경을 격리하거나 옵션을 조정하세요.
+`--output-format json`으로 받은 토큰·비용을 `claude_usage.jsonl`에 누적하며,
+`--no-session-persistence`로 무인 실행 세션을 디스크에 남기지 않습니다.
+
+> ⚠️ **`--dangerously-skip-permissions` 사용 중** — 무인 실행이라 도구 사용을 승인할 사람이 없어
+> 이 플래그를 켜 둡니다. 대신 Claude를 그 회차의 데이터 폴더 하나(`cwd`)로 한정해 실행 범위를 줄입니다.
+> 이 트레이드오프가 부담되면 VM/컨테이너 등으로 실행 환경을 격리하거나 `CLAUDE_EXTRA_ARGS`를 직접 조정하세요.
+
+호출 1회의 최대 대기 시간은 같은 파일의 `CLAUDE_TIMEOUT_SEC` 상수(기본 480초, 환경변수가 아님)로 정합니다.
 
 ## 문제 해결
 
@@ -131,7 +141,7 @@ Claude 호출 옵션은 `CLAUDE_EXTRA_ARGS`에 있습니다. `--disable-slash-co
 | `.ps1` 실행 시 한글이 깨져 파일을 못 찾음 | 파일이 **UTF-8 BOM**으로 저장돼 있어야 함 (Windows PowerShell 5.1) |
 | 작업 마지막 실행 결과 `0x80070002` | 작업 스케줄러가 `python`/`claude`를 못 찾음 → `setup_tasks.ps1` 재실행, `.env`의 `CLAUDE_CLI` 확인 |
 | 텔레그램에 "Claude Code CLI를 찾을 수 없습니다" | `claude` 설치·로그인 여부, `CLAUDE_CLI` 경로 |
-| "Claude Code 분석이 N초 안에 끝나지 않아 중단" | `CLAUDE_TIMEOUT_SEC` 값을 늘림 |
+| "Claude Code 분석이 N초 안에 끝나지 않아 중단" | `한투API_텔레그램분석.py`의 `CLAUDE_TIMEOUT_SEC` 상수 값을 늘림 |
 | 토큰 발급 실패 `EGW00133` | 한투 토큰은 1분에 1회만 발급 가능. 잠시 후 재시도 |
 | 일별 심화지표 숫자가 이상함 | `_cache/advanced_intraday_{종목코드}.json`을 지우면 다음 실행 때 다시 계산 |
 
