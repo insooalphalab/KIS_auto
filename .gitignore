@@ -16,6 +16,10 @@ collection_summary_*.json
 daily_summary_*.json
 claude_usage.jsonl
 
+# ── 개인 전략 자료 (웹 Claude 분석 샘플·상위 뷰) ──
+samples/
+macro_view*
+
 # ── Python / 기타 ────────────────────────
 __pycache__/
 *.py[cod]
