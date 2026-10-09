@@ -5,7 +5,8 @@
 
 수집 탭 구성:
   탭1. 주봉_OHLCV_이격도   : FHKST03010100 (FID_PERIOD_DIV_CODE='W')
-                             10주/40주 MA + 이격도, 외인소진율
+                             10주/40주 MA + 이격도
+                             + FHKST01010400 주봉 (외인소진율, 최근 약 30주)
   탭2. 주간_수급_누적       : FHPTJ04160001 (일봉 수급 → 주차별 집계)
                              외인/기관/연기금/금투/사모 5영업일 누적 순매수
                              주간 VWAP + 현재가 위/아래 판별
@@ -13,7 +14,7 @@
                              신용다이버전스 자동 판별
   탭4. 주간_거래대금_분석   : 탭1 재활용 (추가 API 없음)
                              4주 평균 대비 배율, 52주 백분위, 폭증 신호
-  탭5. 외인소진율_추이      : 탭1 재활용 (추가 API 없음)
+  탭5. 외인소진율_추이      : 탭1 재활용 (탭1의 외인소진율, 30주 이전은 공란)
                              4주 추세, 소진율 구간 분류
 
 API 주요 수정사항 (스펙 확인 후):
@@ -22,8 +23,10 @@ API 주요 수정사항 (스펙 확인 후):
   - 신용잔고 단위: 융자금액 만원 단위 (whol_loan_rmnd_amt)
   - 주봉 API: FID_PERIOD_DIV_CODE='W', 1회 최대 100건
   - output2 필드명: stck_oprc(시가), stck_hgpr(고가), stck_lwpr(저가),
-                    stck_clpr(종가), acml_vol(거래량), acml_tr_pbmn(거래대금)
-                    hts_frgn_ehrt(외인소진율), prdy_vrss/prdy_ctrt(전주대비)
+                    stck_clpr(종가), acml_vol(거래량), acml_tr_pbmn(거래대금),
+                    prdy_vrss(전주대비)
+  - 주봉 output2 에는 prdy_ctrt / hts_frgn_ehrt 가 없다 (2026-10 확인, 이전엔 0으로 기록됨)
+    → 전주대비율은 직접 계산, 외인소진율은 FHKST01010400 주봉에서 받음
 
 수집 시점: 매주 금요일 장 마감 후 실행
 저장 위치: WeeklyData/YYYYMMDD/
@@ -162,8 +165,10 @@ def get_weekly_ohlcv(token, stock_code):
     ─ output2 응답 필드:
       stck_bsop_date(날짜), stck_oprc(시가), stck_hgpr(고가),
       stck_lwpr(저가), stck_clpr(종가), acml_vol(거래량),
-      acml_tr_pbmn(거래대금), prdy_vrss(전주대비), prdy_ctrt(전주대비율),
-      hts_frgn_ehrt(외인소진율)
+      acml_tr_pbmn(거래대금), prdy_vrss(전주대비)
+      ※ prdy_ctrt / hts_frgn_ehrt 는 이 TR 주봉 응답에 없다 (2026-10 확인).
+        전주대비율은 전주대비·종가로 직접 계산하고, 외인소진율은
+        get_weekly_frgn_ehrt()(FHKST01010400 주봉, 최근 약 30주)로 채운다.
     """
     url     = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-itemchartprice"
     headers = make_headers(token, "FHKST03010100")
@@ -227,8 +232,7 @@ def get_weekly_ohlcv(token, stock_code):
                     # acml_tr_pbmn 단위: 원 (일봉/주봉 공통)
                     "거래대금":   to_int(item.get("acml_tr_pbmn",  0)),
                     "전주대비":   to_int(item.get("prdy_vrss",     0)),
-                    "전주대비율": to_float(item.get("prdy_ctrt",   0)),
-                    "외인소진율": to_float(item.get("hts_frgn_ehrt", 0)),
+                    "외인소진율": None,   # get_weekly_frgn_ehrt() 로 채움
                 })
 
     raw_rows.sort(key=lambda x: x["날짜"])
@@ -246,6 +250,10 @@ def get_weekly_ohlcv(token, stock_code):
             return None
         return round((close - ma) / ma * 100, 2)
 
+    for row in raw_rows:
+        prev_close = row["종가"] - row["전주대비"]
+        row["전주대비율"] = round(row["전주대비"] / prev_close * 100, 2) if prev_close > 0 else None
+
     for i, row in enumerate(raw_rows):
         ma10 = _sma(i, 10)
         ma40 = _sma(i, 40)
@@ -261,10 +269,43 @@ def get_weekly_ohlcv(token, stock_code):
 
     raw_rows.sort(key=lambda x: x["날짜"], reverse=True)  # 내림차순 (최신 상단)
 
+    ehrt_map = get_weekly_frgn_ehrt(token, stock_code)
+    for row in raw_rows:
+        row["외인소진율"] = ehrt_map.get(row["날짜"])
+
     if raw_rows:
         print(f"  → 주봉 마스터: {len(raw_rows)}주 "
               f"({raw_rows[-1]['날짜']} ~ {raw_rows[0]['날짜']})")
     return raw_rows
+
+
+def get_weekly_frgn_ehrt(token, stock_code):
+    """
+    TR: FHKST01010400 (주식현재가 일자별)  FID_PERIOD_DIV_CODE='W'
+    ─ 주봉 차트 TR(FHKST03010100)에 없는 hts_frgn_ehrt(외인소진율)를 주차별로 받는다.
+    ─ 최근 약 30주만 반환되므로 그 이전 주차는 None 으로 둔다.
+    ─ 날짜 키는 FHKST03010100 주봉의 stck_bsop_date 와 같다.
+    """
+    url     = f"{BASE_URL}/uapi/domestic-stock/v1/quotations/inquire-daily-price"
+    headers = make_headers(token, "FHKST01010400")
+    params  = {
+        "FID_COND_MRKT_DIV_CODE": "J",
+        "FID_INPUT_ISCD":         stock_code,
+        "FID_PERIOD_DIV_CODE":    "W",
+        "FID_ORG_ADJ_PRC":        "0",
+    }
+    try:
+        items = safe_get(url, headers=headers, params=params).json().get("output", [])
+    except Exception as e:
+        print(f"   ❌ 외인소진율 조회 오류: {e}")
+        return {}
+    result = {}
+    for item in items:
+        d, v = item.get("stck_bsop_date"), item.get("hts_frgn_ehrt")
+        if d and v not in (None, ""):
+            result[d] = to_float(v)
+    print(f"   [외인소진율] {len(result)}주 ✅")
+    return result
 
 
 def save_weekly_ohlcv_excel(rows, wb):
@@ -944,18 +985,20 @@ def build_weekly_frgn_exhaustion(weekly_rows):
     result      = []
 
     for i, row in enumerate(sorted_rows):
-        frgn_ex = row.get("외인소진율", 0) or 0
-        prev_ex = sorted_rows[i + 1].get("외인소진율", 0) if i + 1 < len(sorted_rows) else None
-        chg     = round(frgn_ex - prev_ex, 2) if prev_ex is not None else None
+        frgn_ex = row.get("외인소진율")   # None = 조회 범위(약 30주) 밖
+        prev_ex = sorted_rows[i + 1].get("외인소진율") if i + 1 < len(sorted_rows) else None
+        chg     = round(frgn_ex - prev_ex, 2) if frgn_ex is not None and prev_ex is not None else None
 
         # 4주 연속 추세 계산
         trend_label = "-"
-        if prev_ex is not None:
+        if chg is not None:
             direction   = 1 if frgn_ex >= prev_ex else -1
             trend_count = 1
             for j in range(i + 1, min(i + 5, len(sorted_rows) - 1)):
-                curr_v = sorted_rows[j].get("외인소진율", 0) or 0
-                next_v = sorted_rows[j + 1].get("외인소진율", 0) or 0
+                curr_v = sorted_rows[j].get("외인소진율")
+                next_v = sorted_rows[j + 1].get("외인소진율")
+                if curr_v is None or next_v is None:
+                    break
                 if direction == 1 and curr_v >= next_v:
                     trend_count += 1
                 elif direction == -1 and curr_v <= next_v:
@@ -965,7 +1008,9 @@ def build_weekly_frgn_exhaustion(weekly_rows):
             trend_label = f"{'↑' if direction == 1 else '↓'} {trend_count}주 연속"
 
         # 소진율 구간
-        if frgn_ex >= 80:
+        if frgn_ex is None:
+            zone = "-"
+        elif frgn_ex >= 80:
             zone = "🔴 극고소진(≥80%)"
         elif frgn_ex >= 60:
             zone = "🟠 고소진(60~80%)"
@@ -981,7 +1026,7 @@ def build_weekly_frgn_exhaustion(weekly_rows):
             "4주추세":            trend_label,
             "소진율구간":          zone,
             "주봉종가(원)":        row.get("종가", 0),
-            "주봉등락율(%)":       row.get("전주대비율", 0),
+            "주봉등락율(%)":       row.get("전주대비율"),
             "MA10이격도(%)":       row.get("MA10이격도"),
             "MA40이격도(%)":       row.get("MA40이격도"),
         })
